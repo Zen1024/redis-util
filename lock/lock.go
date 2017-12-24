@@ -7,6 +7,13 @@ import (
 	"time"
 )
 
+var delScript = redis.NewScript(1, `
+if redis.call("get", KEYS[1]) == ARGV[1] then
+	return redis.call("del", KEYS[1])
+else
+	return 0
+end`)
+
 //microsecond jitter
 const time_jitter = int64(100)
 
@@ -73,13 +80,13 @@ func (l *Locker) lock(key string) (error, string) {
 	return nil, ""
 }
 
-func (l *Locker) Lock(key string) error {
+func (l *Locker) Lock(key string) (error, string) {
 	err, id := l.lock(key)
 	if err == nil && id != "" {
-		return nil
+		return nil, id
 	}
 	if err != nil {
-		return err
+		return err, ""
 	}
 	jit := time.Microsecond * time.Duration(rand.Int63n(time_jitter))
 	//retry loop
@@ -87,18 +94,18 @@ func (l *Locker) Lock(key string) error {
 		time.Sleep(jit)
 		err, id = l.lock(key)
 		if err == nil && id != "" {
-			return nil
+			return nil, id
 		}
 		if err != nil {
-			return err
+			return err, ""
 		}
 	}
 
 }
 
-func (l *Locker) UnLock(key string) error {
+func (l *Locker) UnLock(key, val string) error {
 	conn := l.Pool.Get()
 	defer conn.Close()
-	_, err := conn.Do("DEL", key)
+	_, err := delScript.Do(conn, key, val)
 	return err
 }

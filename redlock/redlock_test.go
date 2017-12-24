@@ -1,6 +1,7 @@
-package lock
+package redlock
 
 import (
+	"fmt"
 	"github.com/garyburd/redigo/redis"
 	"math/rand"
 	"runtime"
@@ -9,14 +10,22 @@ import (
 	"time"
 )
 
-var locker *Locker
+var locker *Rdm
 
-func newPool() *redis.Pool {
+var addrs []string = []string{
+	"127.0.0.1:6379",
+	"127.0.0.1:6377",
+	"127.0.0.1:6375",
+	"127.0.0.1:6373",
+	"127.0.0.1:6371",
+}
+
+func newPool(addr string) *redis.Pool {
 	return &redis.Pool{
 		MaxIdle:     3000,
 		IdleTimeout: 240 * time.Second,
 		Dial: func() (redis.Conn, error) {
-			c, err := redis.Dial("tcp", "127.0.0.1:6379", redis.DialDatabase(0))
+			c, err := redis.Dial("tcp", addr, redis.DialDatabase(0))
 			if err != nil {
 				return nil, err
 			}
@@ -34,8 +43,16 @@ func newPool() *redis.Pool {
 }
 
 func init() {
-	pool := newPool()
-	locker = NewLocker(pool, time.Millisecond*30)
+	pools := []*redis.Pool{}
+	for _, addr := range addrs {
+		pool := newPool(addr)
+		pools = append(pools, pool)
+	}
+	var err error
+	locker, err = NewRdm(30*time.Millisecond, 300*time.Millisecond, pools, 10)
+	if err != nil {
+		panic(err)
+	}
 	runtime.GOMAXPROCS(4)
 }
 
@@ -55,34 +72,23 @@ func RandClient() *Client {
 }
 
 func TestFunc(t *testing.T) {
-	cs := make([]*Client, 1000)
+	cs := make([]*Client, 100)
 	wg := sync.WaitGroup{}
-	wg.Add(10)
-	for i := 0; i < 10; i++ {
+	wg.Add(100)
+	for i := 0; i < 100; i++ {
 		cs[i] = RandClient()
 	}
 	j := 0
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 100; i++ {
 		c := cs[i]
 		go func(c *Client) {
 			defer wg.Done()
-			err, l_val := locker.Lock("foo-lock")
-			if err != nil {
-				t.Fatalf("Err lock:%s\n", err.Error())
-			}
-			t.Logf("j:%d\n", j)
+			locked, val := locker.Lock("foo-lock2")
+			fmt.Printf("locked:%v,val:%s,j:%d\n", locked, val, j)
 			tmp := j
 			j = tmp + 1
 			c.Do()
-			locker.UnLock("foo-lock", l_val)
 		}(c)
 	}
 	wg.Wait()
-}
-
-func BenchmarkLock(b *testing.B) {
-	for n := 0; n < b.N; n++ {
-		_, val := locker.Lock("test-lock")
-		locker.UnLock("test-lock", val)
-	}
 }
